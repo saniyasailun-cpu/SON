@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ระบบบริหารจัดการพัสดุ</title>
+  <style>
+    :root { --navy:#172033; --blue:#2157b6; --light:#f3f6fb; --border:#d9e0ea; --text:#1f2937; --muted:#6b7280; --warning:#f59e0b; --danger:#dc2626; --success:#10b981; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:Tahoma,'Noto Sans Thai',Arial,sans-serif; color:var(--text); background:#edf2f7; }
+    .login { min-height:100vh; display:grid; place-items:center; padding:24px; background:linear-gradient(135deg,#172033,#2e5aa9); }
+    .card { width:min(500px,100%); background:#fff; border-radius:18px; overflow:hidden; box-shadow:0 18px 40px rgba(0,0,0,.18); }
+    .header { background:var(--navy); color:#fff; padding:32px; }
+    .header h1 { margin:0; font-size:30px; }
+    .header p { margin:10px 0 0; color:#cfe1ff; }
+    .body { padding:32px; }
+    .field { display:grid; gap:8px; margin-bottom:18px; }
+    label { font-weight:700; color:var(--navy); }
+    input, select { width:100%; border:1px solid var(--border); border-radius:10px; padding:12px; font:inherit; }
+    button { width:100%; border:0; border-radius:10px; padding:12px 18px; background:var(--blue); color:#fff; font-weight:800; cursor:pointer; }
+    .notice { margin-top:16px; padding:12px; border-radius:10px; background:#eef6ff; color:#174a8a; font-weight:700; }
+    .status { font-size:14px; color:var(--muted); }
+  </style>
+</head>
+<body>
+  <main class="login">
+    <section class="card" aria-labelledby="app-title">
+      <div class="header">
+        <h1 id="app-title">ระบบบริหารจัดการพัสดุ</h1>
+        <p>Supplier Shipment &amp; Package Receiving Management System</p>
+      </div>
+      <div class="body">
+        <form id="login-form">
+          <div class="field">
+            <label for="email">อีเมลที่ลงทะเบียน</label>
+            <input id="email" name="email" type="email" placeholder="ชื่อ@domain.com" required>
+          </div>
+          <div class="field">
+            <label for="type">ประเภทผู้ใช้งาน</label>
+            <select id="type" name="type">
+              <option value="supplier">ผู้ขาย / ผู้ให้บริการ</option>
+              <option value="employee">พนักงานบริษัท</option>
+            </select>
+          </div>
+          <button type="submit">ส่งรหัสยืนยัน</button>
+        </form>
+        <div id="notice" class="notice" role="status">การยืนยันตัวตนต้องใช้บริการ Google Apps Script หลังจาก deploy จริง</div>
+        <p class="status">โหมดนี้ใช้สำหรับทดสอบหน้า UI แบบ local เท่านั้น</p>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const form = document.getElementById('login-form');
+    const notice = document.getElementById('notice');
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      notice.textContent = 'สถานะ: ระบบจะยืนยันตัวตนผ่าน Google Apps Script หลังจาก deploy โดยใช้รหัส OTP';
+    });
+  </script>
+</body>
+</html>

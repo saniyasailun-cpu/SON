@@ -1,0 +1,223 @@
+<script>
+const app = document.getElementById('app');
+const state = { user: null, currentPage: 'login', shipments: [], suppliers: [], settings: {} };
+const api = (action, payload = {}) => new Promise((resolve, reject) => {
+  google.script.run.withSuccessHandler((response) => {
+    if (response && response.success) resolve(response.data ?? response);
+    else reject(new Error(response?.message || 'เกิดข้อผิดพลาด'));
+  }).withFailureHandler(reject)[action](payload);
+});
+
+function getSession() { return localStorage.getItem('ssprms_session'); }
+function setSession(token) { localStorage.setItem('ssprms_session', token); }
+function clearSession() { localStorage.removeItem('ssprms_session'); }
+function showToast(message) { const t = document.getElementById('toast'); if (!t) return; t.textContent = message; t.classList.add('show'); clearTimeout(t.timeout); t.timeout = setTimeout(() => t.classList.remove('show'), 3000); }
+function escapeHtml(value) { return String(value ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;'); }
+function setLoading(isLoading, message='กำลังโหลดข้อมูล...') { document.getElementById('loading').innerHTML = isLoading ? `<div class="loading">${message}</div>` : ''; }
+function statusBadge(status) { return `<span class="badge status-${status || 'DRAFT'}">${statusLabels[status] || status}</span>`; }
+const statusLabels = { DRAFT:'ร่างรายการ', PENDING_SHIPMENT:'รอจัดส่ง', SHIPPED:'จัดส่งแล้ว', ARRIVED:'ถึงบริษัทแล้ว', COLLECTED:'รับพัสดุแล้ว', VERIFIED:'ตรวจสอบเรียบร้อย', COMPLETED:'เสร็จสิ้น', CANCELLED:'ยกเลิก', DELIVERY_EXCEPTION:'มีปัญหาการจัดส่ง', RETURNED:'ส่งคืน' };
+
+function renderApp() {
+  const session = getSession();
+  const user = state.user || JSON.parse(session || 'null');
+  if (!user) return renderLogin();
+  return user.role === 'supplier' ? renderSupplierPortal(user) : user.role === 'employee' ? renderEmployeePortal(user) : renderLogin();
+}
+
+function renderLogin() {
+  app.innerHTML = `
+  <div class="login-wrap" style="min-height:100vh;display:grid;place-items:center;background:linear-gradient(135deg,#172033,#2e5aa9);padding:20px">
+    <div class="card" style="width:min(480px,100%);padding:0;overflow:hidden">
+      <div style="background:#172033;color:#fff;padding:30px 30px 20px">
+        <h1 style="margin:0;font-size:30px">ระบบบริหารจัดการพัสดุ</h1>
+        <p style="margin:10px 0 0;color:#cfe1ff">Supplier Shipment & Package Receiving Management System</p>
+      </div>
+      <div style="padding:30px">
+        <div class="field">
+          <label>อีเมลที่ลงทะเบียน</label>
+          <input id="login-email" type="email" placeholder="ชื่อ@domain.com">
+        </div>
+        <div class="field" style="margin-top:16px">
+          <label>ประเภทผู้ใช้งาน</label>
+          <select id="login-type"><option value="supplier">ผู้ขาย / ผู้ให้บริการ</option><option value="employee">พนักงานบริษัท</option></select>
+        </div>
+        <button id="request-otp" class="primary" style="width:100%;margin-top:20px">ส่งรหัสยืนยัน</button>
+        <div id="otp-panel" style="display:none;margin-top:16px">
+          <div class="field"><label>รหัสยืนยัน 6 หลัก</label><input id="otp-code" inputmode="numeric" maxlength="6" placeholder="กรอกรหัส 6 หลัก"></div>
+          <button id="verify-otp" class="primary" style="width:100%;margin-top:12px">ยืนยันและเข้าสู่ระบบ</button>
+        </div>
+        <div id="login-message" style="margin-top:16px;color:#dc2626;font-weight:700"></div>
+      </div>
+    </div>
+    <div id="toast" class="toast"></div>
+  </div>`;
+  document.getElementById('request-otp').onclick = async () => {
+    const email = document.getElementById('login-email').value.trim();
+    const type = document.getElementById('login-type').value;
+    try {
+      const response = await api('login-request', { email, type });
+      state.user = { role: type, email, awaitingOtp: true };
+      document.getElementById('otp-panel').style.display = 'block';
+      document.getElementById('login-message').textContent = response.message || 'ส่งรหัสยืนยันแล้ว';
+    } catch (error) { document.getElementById('login-message').textContent = error.message; }
+  };
+  document.getElementById('verify-otp').onclick = async () => {
+    const email = document.getElementById('login-email').value.trim();
+    const code = document.getElementById('otp-code').value.trim();
+    try { const response = await api('login-verify', { email, code }); setSession(response.user ? response.sessionToken : ''); state.user = response.user; renderApp(); } catch (error) { document.getElementById('login-message').textContent = error.message; }
+  };
+}
+
+function renderSupplierPortal(user) {
+  app.innerHTML = `
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">SSPRMS</div>
+      <nav>
+        <button class="nav active" data-page="supplier-dashboard">ภาพรวม</button>
+        <button class="nav" data-page="shipment-form">ลงทะเบียนพัสดุ</button>
+        <button class="nav" data-page="supplier-shipments">รายการจัดส่ง</button>
+        <button class="nav" data-page="supplier-history">ประวัติการจัดส่ง</button>
+        <button class="nav" data-page="supplier-info">ข้อมูลบริษัท</button>
+        <button class="nav" data-page="logout">ออกจากระบบ</button>
+      </nav>
+    </aside>
+    <div class="content">
+      <header class="topbar"><h1 id="page-title">ภาพรวม</h1><div class="top-actions"><span class="user-pill">${escapeHtml(user.email)}</span><button class="secondary" id="logout-btn">ออกจากระบบ</button></div></header>
+      <main class="main" id="page-content"></main>
+    </div>
+  </div>
+  <div id="toast" class="toast"></div>`;
+  document.querySelectorAll('.nav').forEach((btn) => btn.onclick = () => { if (btn.dataset.page === 'logout') return logout(); state.currentPage = btn.dataset.page; renderSupplierPage(); });
+  renderSupplierPage();
+}
+
+function renderEmployeePortal(user) {
+  app.innerHTML = `
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">SSPRMS</div>
+      <nav>
+        <button class="nav active" data-page="company-dashboard">ภาพรวม</button>
+        <button class="nav" data-page="all-packages">พัสดุทั้งหมด</button>
+        <button class="nav" data-page="in-transit">พัสดุระหว่างจัดส่ง</button>
+        <button class="nav" data-page="arrived">พัสดุถึงบริษัทแล้ว</button>
+        <button class="nav" data-page="awaiting-collection">รอรับพัสดุ</button>
+        <button class="nav" data-page="overdue">พัสดุเกินกำหนด</button>
+        <button class="nav" data-page="unknown-sender">รับพัสดุไม่ทราบผู้ส่ง</button>
+        <button class="nav" data-page="suppliers">จัดการผู้ขาย</button>
+        <button class="nav" data-page="reports">รายงาน</button>
+        <button class="nav" data-page="settings">ตั้งค่าระบบ</button>
+        <button class="nav" data-page="logout">ออกจากระบบ</button>
+      </nav>
+    </aside>
+    <div class="content"><header class="topbar"><h1 id="page-title">ภาพรวม</h1><div class="top-actions"><span class="user-pill">${escapeHtml(user.email)}</span><button class="secondary" id="logout-btn">ออกจากระบบ</button></div></header><main class="main" id="page-content"></main></div>
+  </div><div id="toast" class="toast"></div>`;
+  document.querySelectorAll('.nav').forEach((btn) => btn.onclick = () => { if (btn.dataset.page === 'logout') return logout(); state.currentPage = btn.dataset.page; renderEmployeePage(); });
+  renderEmployeePage();
+}
+
+function renderSupplierPage() {
+  const page = state.currentPage;
+  document.querySelectorAll('.nav').forEach((button) => button.classList.toggle('active', button.dataset.page === page));
+  document.getElementById('page-title').textContent = page === 'supplier-dashboard' ? 'ภาพรวม' : page === 'shipment-form' ? 'ลงทะเบียนพัสดุ' : page === 'supplier-shipments' ? 'รายการจัดส่ง' : page === 'supplier-history' ? 'ประวัติการจัดส่ง' : 'ข้อมูลบริษัท';
+  if (page === 'supplier-dashboard') return loadSupplierDashboard();
+  if (page === 'shipment-form') return loadShipmentForm();
+  if (page === 'supplier-shipments') return loadSupplierShipments();
+  if (page === 'supplier-history') return loadShipmentHistoryList();
+  return loadSupplierInfo();
+}
+
+function renderEmployeePage() {
+  const page = state.currentPage;
+  document.querySelectorAll('.nav').forEach((button) => button.classList.toggle('active', button.dataset.page === page));
+  document.getElementById('page-title').textContent = ({ 'company-dashboard':'ภาพรวม', 'all-packages':'พัสดุทั้งหมด', 'in-transit':'พัสดุระหว่างจัดส่ง', 'arrived':'พัสดุถึงบริษัทแล้ว', 'awaiting-collection':'รอรับพัสดุ', 'overdue':'พัสดุเกินกำหนด', 'unknown-sender':'รับพัสดุไม่ทราบผู้ส่ง', 'suppliers':'จัดการผู้ขาย', 'reports':'รายงาน', 'settings':'ตั้งค่าระบบ' })[page] || 'ภาพรวม';
+  if (page === 'company-dashboard') return loadCompanyDashboard();
+  if (page === 'all-packages') return renderPackageList('ทั้งหมด');
+  if (page === 'in-transit') return renderPackageList('ระหว่างจัดส่ง');
+  if (page === 'arrived') return renderPackageList('ถึงบริษัทแล้ว');
+  if (page === 'awaiting-collection') return renderPackageList('รอรับพัสดุ');
+  if (page === 'overdue') return renderPackageList('เกินกำหนด');
+  if (page === 'unknown-sender') return renderUnknownSender();
+  if (page === 'suppliers') return renderSupplierManagement();
+  if (page === 'reports') return renderReports();
+  if (page === 'settings') return renderSettings();
+}
+
+async function loadSupplierDashboard() {
+  const content = document.getElementById('page-content');
+  content.innerHTML = '<div class="loading">กำลังโหลดข้อมูล...</div>';
+  try {
+    const data = await api('getDashboardData', { sessionToken: getSession() });
+    const shipments = data.shipments || [];
+    const stats = { total: shipments.length, pending: shipments.filter(s => s.shipment_status === 'PENDING_SHIPMENT').length, shipped: shipments.filter(s => s.shipment_status === 'SHIPPED').length, arrived: shipments.filter(s => s.shipment_status === 'ARRIVED').length, completed: shipments.filter(s => s.shipment_status === 'COMPLETED').length };
+    content.innerHTML = `<div class="grid grid-4">${['total','pending','shipped','arrived','completed'].map((key,i)=>`<div class="card stat"><div><div class="label">${['การจัดส่งทั้งหมด','รอจัดส่ง','ระหว่างจัดส่ง','ถึงบริษัทแล้ว','ดำเนินการเสร็จสิ้น'][i]}</div><strong>${stats[key]}</strong></div><div class="icon">${['S','P','T','A','C'][i]}</div></div>`).join('')}</div><div class="card" style="margin-top:20px"><div class="searchbar"><input id="supplier-search" placeholder="ค้นหาเลขที่รายการ หรือหมายเลขติดตาม"><select id="supplier-status"><option value="">ทุกสถานะ</option>${Object.entries(statusLabels).map(([v,l]) => `<option value="${v}">${l}</option>`).join('')}</select><button class="primary" id="supplier-filter">ค้นหา</button></div><div id="supplier-table"></div></div>`;
+    renderSupplierTable(shipments);
+    document.getElementById('supplier-filter').onclick = () => renderSupplierTable(shipments.filter(s => !document.getElementById('supplier-status').value || s.shipment_status === document.getElementById('supplier-status').value).filter(s => (s.shipment_id + s.po_number + s.tracking_number).toLowerCase().includes(document.getElementById('supplier-search').value.toLowerCase())));
+  } catch (error) { content.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; }
+}
+
+function renderSupplierTable(items) {
+  const table = document.getElementById('supplier-table');
+  if (!items.length) return table.innerHTML = '<div class="empty">ยังไม่มีรายการจัดส่ง</div>';
+  table.innerHTML = `<div class="table-wrap"><table><thead><tr><th>เลขที่รายการ</th><th>เลขที่ใบสั่งซื้อ</th><th>บริษัทขนส่ง</th><th>หมายเลขติดตาม</th><th>วันที่จัดส่ง</th><th>สถานะ</th><th>จัดการ</th></tr></thead><tbody>${items.map(item => `<tr><td>${escapeHtml(item.shipment_id)}</td><td>${escapeHtml(item.po_number || '-')}</td><td>${escapeHtml(item.courier_name)}</td><td>${escapeHtml(item.tracking_number || '-')}</td><td>${escapeHtml(item.shipping_date ? new Date(item.shipping_date).toLocaleDateString('th-TH') : '-')}</td><td>${statusBadge(item.shipment_status)}</td><td><button class="secondary" data-action="view" data-id="${item.shipment_id}">ดูรายละเอียด</button><button class="secondary" data-action="label" data-id="${item.shipment_id}" style="margin-left:8px">พิมพ์ป้าย</button></td></tr>`).join('')}</tbody></table></div>`;
+  table.querySelectorAll('button').forEach(button => button.onclick = async () => { if (button.dataset.action === 'view') { state.currentShipment = button.dataset.id; await loadShipmentDetails(button.dataset.id); } else { await printLabel(button.dataset.id); } });
+}
+
+async function loadShipmentForm() {
+  document.getElementById('page-content').innerHTML = `<div class="card"><h2>ลงทะเบียนพัสดุ</h2><form id="shipment-form" class="form-grid"><div class="field"><label>เลขที่ใบสั่งซื้อ</label><input name="po_number"></div><div class="field"><label>เลขที่ใบแจ้งหนี้</label><input name="invoice_number"></div><div class="field"><label>เลขอ้างอิง</label><input name="reference_number"></div><div class="field"><label>ประเภทพัสดุ</label><select name="package_category"><option value="สินค้า">สินค้า</option><option value="เอกสาร">เอกสาร</option><option value="ใบแจ้งหนี้">ใบแจ้งหนี้</option><option value="อุปกรณ์">อุปกรณ์</option><option value="อะไหล่">อะไหล่</option><option value="อื่น ๆ">อื่น ๆ</option></select></div><div class="field full"><label>รายละเอียดสินค้า</label><textarea name="item_description" required></textarea></div><div class="field"><label>จำนวน</label><input name="quantity" type="number" min="1" value="1"></div><div class="field"><label>บริษัทขนส่ง</label><input name="courier_name" list="couriers"></div><div class="field"><label>หมายเลขติดตาม</label><input name="tracking_number"></div><div class="field"><label>วันที่จัดส่ง</label><input name="shipping_date" type="date"></div><div class="field"><label>วันที่คาดว่าจะถึง</label><input name="expected_arrival" type="date"></div><div class="field"><label>จำนวนพัสดุ</label><input name="count" type="number" min="1" value="1"></div><div class="field full"><label>หมายเหตุ</label><textarea name="notes"></textarea></div><div class="field full"><button class="primary" type="submit">บันทึกรายการ</button></div></form></div><datalist id="couriers"><option>ไปรษณีย์ไทย</option><option>J&T Express</option><option>Flash Express</option><option>Kerry / KEX</option><option>FedEx</option><option>DHL</option><option>Best Express</option><option>บริษัทขนส่งอื่น ๆ</option></datalist>`;
+  document.getElementById('shipment-form').onsubmit = async (event) => { event.preventDefault(); const payload = Object.fromEntries(new FormData(event.target).entries()); payload.sessionToken = getSession(); payload.shipment_status = 'PENDING_SHIPMENT'; try { const response = await api('shipment-create', payload); const created = await api('packages-create', { shipment_id: response.shipment_id, count: payload.count, sessionToken: getSession() }); showToast('บันทึกรายการสำเร็จ'); state.currentPage = 'supplier-shipments'; renderSupplierPage(); } catch (error) { showToast(error.message); } };
+}
+
+async function loadSupplierShipments() { document.getElementById('page-content').innerHTML = '<div class="loading">กำลังโหลด...</div>'; try { const data = await api('shipment-list', { sessionToken: getSession() }); renderSupplierTable(data.shipments || []); } catch(error){ document.getElementById('page-content').innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; } }
+async function loadShipmentHistoryList() { const data = await api('shipment-list', { sessionToken: getSession() }); if (!data.shipments.length) return document.getElementById('page-content').innerHTML = '<div class="empty">ยังไม่มีประวัติการจัดส่ง</div>'; document.getElementById('page-content').innerHTML = `<div class="table-wrap"><table><thead><tr><th>เลขที่รายการ</th><th>สถานะ</th><th>วันที่เปลี่ยนแปลง</th></tr></thead><tbody>${data.shipments.map(item => `<tr><td>${escapeHtml(item.shipment_id)}</td><td>${statusBadge(item.shipment_status)}</td><td>${escapeHtml(new Date(item.updated_at).toLocaleDateString('th-TH'))}</td></tr>`).join('')}</tbody></table></div>`; }
+async function loadSupplierInfo() { try { const data = await api('getDashboardData', { sessionToken: getSession() }); const supplier = data.supplier || {}; document.getElementById('page-content').innerHTML = `<div class="card"><h2>ข้อมูลบริษัท</h2><div class="form-grid"><div class="field"><label>ชื่อบริษัท</label><input value="${escapeHtml(supplier.company_name || '')}" readonly></div><div class="field"><label>ผู้ติดต่อ</label><input value="${escapeHtml(supplier.contact_person || '')}" readonly></div><div class="field"><label>อีเมล</label><input value="${escapeHtml(supplier.email || '')}" readonly></div><div class="field"><label>โทรศัพท์</label><input value="${escapeHtml(supplier.phone || '')}" readonly></div><div class="field full"><label>ที่อยู่</label><textarea readonly>${escapeHtml(supplier.address || '')}</textarea></div></div></div>`; } catch(error){ document.getElementById('page-content').innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; } }
+
+async function loadCompanyDashboard() {
+  document.getElementById('page-content').innerHTML = '<div class="loading">กำลังโหลดข้อมูล...</div>';
+  try {
+    const data = await api('getDashboardData', { sessionToken: getSession() });
+    const shipments = data.shipments || [];
+    const packages = data.packages || [];
+    const stats = { total: shipments.length, pending: shipments.filter(s => s.shipment_status === 'PENDING_SHIPMENT').length, inTransit: shipments.filter(s => s.shipment_status === 'SHIPPED').length, arrived: packages.filter(p => p.package_status === 'ARRIVED').length, overdue: packages.filter(p => p.package_status === 'ARRIVED' && new Date(p.arrived_at).getTime() < Date.now() - (data.settings.overdueDeadlineHours * 3600000)).length, completed: shipments.filter(s => s.shipment_status === 'COMPLETED').length };
+    document.getElementById('page-content').innerHTML = `<div class="grid grid-4">${['total','pending','inTransit','arrived','overdue','completed'].map((key, index) => `<div class="card stat"><div><div class="label">${['พัสดุทั้งหมด','รอจัดส่ง','ระหว่างจัดส่ง','ถึงบริษัทแล้ว','รอรับพัสดุ','เสร็จสิ้น'][index]}</div><strong>${stats[key]}</strong></div><div class="icon">${['P','W','T','A','O','C'][index]}</div></div>`).join('')}</div><div class="card" style="margin-top:20px"><h2>รายการพัสดุเข้ามาใหม่</h2><div id="employee-table"></div></div>`;
+    renderEmployeeTable(shipments);
+  } catch (error) { document.getElementById('page-content').innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; }
+}
+
+function renderEmployeeTable(items) {
+  const table = document.getElementById('employee-table');
+  if (!items.length) return table.innerHTML = '<div class="empty">ยังไม่มีรายการพัสดุ</div>';
+  table.innerHTML = `<div class="table-wrap"><table><thead><tr><th>เลขที่รายการ</th><th>ผู้ขาย</th><th>บริษัทขนส่ง</th><th>หมายเลขติดตาม</th><th>วันที่คาดถึง</th><th>สถานะ</th><th>จัดการ</th></tr></thead><tbody>${items.map(item => `<tr><td>${escapeHtml(item.shipment_id)}</td><td>${escapeHtml(item.supplier_id)}</td><td>${escapeHtml(item.courier_name)}</td><td>${escapeHtml(item.tracking_number || '-')}</td><td>${escapeHtml(item.expected_arrival ? new Date(item.expected_arrival).toLocaleDateString('th-TH') : '-')}</td><td>${statusBadge(item.shipment_status)}</td><td><button class="secondary" data-action="view" data-id="${item.shipment_id}">ดูรายละเอียด</button></td></tr>`).join('')}</tbody></table></div>`;
+  table.querySelectorAll('button').forEach(button => button.onclick = () => { state.currentShipment = button.dataset.id; loadShipmentDetails(button.dataset.id); });
+}
+
+async function loadShipmentDetails(shipmentId) {
+  try {
+    const history = await api('shipment-history', { shipment_id: shipmentId, sessionToken: getSession() });
+    const shipment = (await api('shipment-list', { sessionToken: getSession() })).shipments.find(item => item.shipment_id === shipmentId) || {};
+    const packages = (await api('shipment-list', { sessionToken: getSession() })).shipments.length ? [] : [];
+    const html = `<div class="card"><h2>รายละเอียดรายการ ${escapeHtml(shipmentId)}</h2><div class="form-grid"><div class="field"><label>เลขที่ใบสั่งซื้อ</label><input value="${escapeHtml(shipment.po_number || '')}" readonly></div><div class="field"><label>บริษัทขนส่ง</label><input value="${escapeHtml(shipment.courier_name || '')}" readonly></div><div class="field"><label>หมายเลขติดตาม</label><input value="${escapeHtml(shipment.tracking_number || '')}" readonly></div><div class="field"><label>สถานะ</label><input value="${escapeHtml(statusLabels[shipment.shipment_status] || shipment.shipment_status || '')}" readonly></div><div class="field full"><label>ประวัติ</label><textarea readonly>${escapeHtml(JSON.stringify(history, null, 2))}</textarea></div></div></div>`;
+    document.getElementById('page-content').innerHTML = html;
+  } catch (error) { showToast(error.message); }
+}
+
+async function renderPackageList(filter) {
+  const response = await api('shipment-list', { sessionToken: getSession() });
+  const shipments = response.shipments || [];
+  const packages = await Promise.all(shipments.map(async s => (await api('shipment-history', { shipment_id: s.shipment_id, sessionToken: getSession() })).error ? [] : []));
+  document.getElementById('page-content').innerHTML = `<div class="empty">ฟังก์ชันนี้ยังต้องเชื่อมต่อแพ็กเกจแบบเต็มเพื่อเปิดใช้งาน</div>`;
+}
+
+function renderUnknownSender() { document.getElementById('page-content').innerHTML = `<div class="card"><h2>รับพัสดุไม่ทราบผู้ส่ง</h2><form class="form-grid"><div class="field"><label>บริษัทขนส่ง</label><input name="courier_name"></div><div class="field"><label>หมายเลขติดตาม</label><input name="tracking_number"></div><div class="field"><label>ชื่อผู้ส่ง</label><input name="sender_name"></div><div class="field"><label>คำอธิบายพัสดุ</label><input name="package_description"></div><div class="field"><label>วันที่และเวลาเข้ารับ</label><input name="arrival_datetime" type="datetime-local"></div><div class="field"><label>สถานที่รับ</label><input name="receiving_location"></div><div class="field full"><label>หมายเหตุ</label><textarea name="notes"></textarea></div><div class="field full"><button class="primary" type="submit">บันทึกพัสดุที่ไม่ทราบผู้ส่ง</button></div></form></div>`; }
+
+function renderSupplierManagement() { document.getElementById('page-content').innerHTML = '<div class="empty">จัดการผู้ขายจะถูกเปิดใช้งานหลังจากเชื่อมต่อกับ API ผู้ขาย</div>'; }
+function renderReports() { document.getElementById('page-content').innerHTML = '<div class="empty">รายงานจะเปิดใช้งานพร้อมระบบรายงานรองรับ CSV</div>'; }
+function renderSettings() { document.getElementById('page-content').innerHTML = '<div class="empty">ตั้งค่าระบบพร้อมใช้งานสำหรับพนักงานบริษัทหลังจากบันทึกข้อมูลบริษัท</div>'; }
+
+async function getPackageLabel(packageId) { const response = await api('label-preview', { package_id: packageId, sessionToken: getSession() }); /* placeholder */ }
+async function printLabel(shipmentId) { const response = await api('shipment-list', { sessionToken: getSession() }); const shipment = response.shipments.find(item => item.shipment_id === shipmentId); if (!shipment) return; const pkg = (await api('shipment-list', { sessionToken: getSession() })).shipments.length ? [] : []; window.open(`https://example.invalid/label/${shipmentId}`,'_blank'); }
+async function logout() { try { await api('logout', { sessionToken: getSession() }); } finally { clearSession(); state.user = null; renderApp(); } }
+
+window.onload = () => { renderApp(); };
+</script>
